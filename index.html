@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" />
+  <meta name="theme-color" content="#0b1020" />
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/assets/PlayerBust.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Portrait Adventure UI — Canvas Prototype</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #0b1020;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      color: #e9f0ff;
+      overflow: hidden;
+      touch-action: none;
+    }
+    #wrap {
+      height: 100%;
+      display: grid;
+      place-items: center;
+      padding-top: env(safe-area-inset-top);
+      padding-right: env(safe-area-inset-right);
+      padding-bottom: env(safe-area-inset-bottom);
+      padding-left: env(safe-area-inset-left);
+      box-sizing: border-box;
+    }
+    canvas {
+      background: #0b1020;
+      border-radius: 18px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.45);
+      image-rendering: crisp-edges;
+    }
+    .hint {
+      position: fixed;
+      left: 12px;
+      bottom: 12px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(0,0,0,.35);
+      border: 1px solid rgba(140,170,255,.25);
+      backdrop-filter: blur(6px);
+      font-size: 12px;
+      line-height: 1.2;
+      max-width: 360px;
+    }
+    .hint b { font-weight: 700; }
+    /* Temporary developer toggles: hide helper UI and debug overlay for clean mobile testing */
+    .hint { display: none !important; }
+    /* debug overlay created dynamically — target by matching its inline style fragments */
+    div[style*="pointer-events: none"][style*="top: 12px"][style*="right: 12px"] { display: none !important; }
+
+    /* Make the canvas fill the phone screen (scale via CSS) */
+    /* Use dynamic viewport height to avoid iOS 100vh quirks */
+    canvas { width: 100vw !important; height: 100dvh !important; border-radius: 0 !important; box-shadow: none !important; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="game" width="390" height="844" aria-label="canvas game"></canvas>
+  </div>
+  <div class="hint">
+    <b>Canvas Prototype Controls</b><br/>
+    Tap NPC markers to talk • Tap dialogue box to advance • Movement/Status/Battle buttons at bottom • Tap portrait to open status
+  </div>
+  <script type="module" src="js/game.js"></script>
+  <script>
+    // Prevent iOS rubber-band / page-bounce during gameplay and ensure
+    // the visual viewport resizes are respected.
+    try {
+      document.addEventListener('touchmove', function(e){ e.preventDefault(); }, { passive: false });
+    } catch (e) {}
+  </script>
+  <script>
+    // Service worker registration with a dev bypass (`?noSW`) and
+    // auto-activation of new service workers to reduce stale-cache issues.
+    (async function registerSW(){
+      if (!('serviceWorker' in navigator)) return;
+      try {
+        // If testing with ?noSW we unregister existing workers and skip registration
+        if (location.search.includes('noSW')) {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          for (const r of regs) await r.unregister();
+          console.log('Service worker bypass active (noSW)');
+          return;
+        }
+
+        const reg = await navigator.serviceWorker.register('/sw.js');
+
+        // If a waiting worker is present (from a previous install), ask it to skipWaiting
+        if (reg.waiting) {
+          reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+        }
+
+        // When a new worker is found, request it to activate as soon as it's installed
+        reg.addEventListener('updatefound', () => {
+          const newWorker = reg.installing;
+          if (!newWorker) return;
+          newWorker.addEventListener('statechange', () => {
+            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+              newWorker.postMessage({ type: 'SKIP_WAITING' });
+            }
+          });
+        });
+
+        // Reload the page when the new service worker takes control so the UI sees fresh assets
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+          try { window.location.reload(); } catch (e) {}
+        });
+
+      } catch (err) {
+        console.warn('SW registration failed:', err);
+      }
+    })();
+  </script>
+</body>
+</html>
