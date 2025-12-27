@@ -1,0 +1,1499 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>Portrait Adventure UI — Canvas Prototype</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #0b1020;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      color: #e9f0ff;
+      overflow: hidden;
+      touch-action: none;
+    }
+    #wrap {
+      height: 100%;
+      display: grid;
+      place-items: center;
+    }
+    canvas {
+      background: #0b1020;
+      border-radius: 18px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.45);
+      image-rendering: crisp-edges;
+    }
+    .hint {
+      position: fixed;
+      left: 12px;
+      bottom: 12px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(0,0,0,.35);
+      border: 1px solid rgba(140,170,255,.25);
+      backdrop-filter: blur(6px);
+      font-size: 12px;
+      line-height: 1.2;
+      max-width: 360px;
+    }
+    .hint b { font-weight: 700; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="game" width="390" height="844" aria-label="canvas game"></canvas>
+  </div>
+  <div class="hint">
+    <b>Canvas Prototype Controls</b><br/>
+    Tap NPC markers to talk • Tap dialogue box to advance • Movement/Status/Battle buttons at bottom • Tap portrait to open status
+  </div>
+
+<script>
+(() => {
+  // =========================
+  // Utilities
+  // =========================
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+
+  // Logical base resolution (portrait)
+  const BASE_W = 390;
+  const BASE_H = 844;
+
+  // =========================
+  // Data (swap/extend easily)
+  // =========================
+  const DATA = {
+    player: {
+      name: "Nova",
+      level: 1,
+      hp: { cur: 30, max: 30 },
+      en: { cur: 12, max: 12 },
+      coins: 90,
+      gems: 4401,
+      inventory: ["Old Key (stub)", "Notebook (stub)"]
+    },
+    locations: {
+      plaza: {
+        name: "Neo Plaza",
+        backgroundVariant: "plaza",
+        backgroundImage: "assets/area1.png",
+        connections: ["lab", "alley"],
+        npcs: [
+          {
+            id: "guide",
+            name: "Guide Bot",
+            marker: { xPct: 0.24, yPct: 0.46 },
+            image: "assets/guidebot.png",
+            srcFrac: 0.5,
+            dialogue: [
+              "Welcome to Neo Plaza! Tap around to explore.",
+              "This is a canvas prototype: modular UI + data-driven content.",
+              "Use the Movement button to change locations.",
+              "Hit Battle Test to jump to the combat stub screen."
+            ]
+          },
+          {
+            id: "vendor",
+            name: "Street Vendor",
+            marker: { xPct: 0.70, yPct: 0.52 },
+            image: "assets/npcgirl.png",
+            srcFrac: 0.5,
+            dialogue: [
+              "Fresh upgrades! (Not really—shop system is a stub.)",
+              "If you add items later, hook them into the inventory array."
+            ]
+          }
+        ]
+      },
+      lab: {
+        name: "Skyline Lab",
+        backgroundVariant: "lab",
+        connections: ["plaza"],
+        npcs: [
+          {
+            id: "scientist",
+            name: "Lab Technician",
+            marker: { xPct: 0.62, yPct: 0.44 },
+            dialogue: [
+              "Diagnostics online. Your UI modules look healthy.",
+              "Try swapping the theme colors or adding a quest panel next."
+            ]
+          }
+        ]
+      },
+      alley: {
+        name: "Circuit Alley",
+        backgroundVariant: "alley",
+        connections: ["plaza"],
+        npcs: [
+          {
+            id: "kid",
+            name: "Rookie Runner",
+            marker: { xPct: 0.30, yPct: 0.55 },
+            dialogue: [
+              "Shh... I heard battles will be tested here soon.",
+              "For now, use the Battle Test button to see the stub screen."
+            ]
+          }
+        ]
+      }
+    }
+  };
+
+  // =========================
+  // Canvas setup (responsive scaling)
+  // =========================
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+
+  let scale = 1;
+  let offsetX = 0;
+  let offsetY = 0;
+
+  function resize() {
+    const ww = window.innerWidth;
+    const wh = window.innerHeight;
+
+    // Fit canvas within viewport, keep aspect ratio BASE_W:BASE_H
+    const s = Math.min(ww / BASE_W, wh / BASE_H);
+    scale = s;
+
+    // Keep internal resolution fixed; scale via CSS for crisp UI
+    canvas.style.width = (BASE_W * scale) + "px";
+    canvas.style.height = (BASE_H * scale) + "px";
+
+    offsetX = (ww - BASE_W * scale) / 2;
+    offsetY = (wh - BASE_H * scale) / 2;
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  function toLocal(clientX, clientY) {
+    const x = (clientX - offsetX) / scale;
+    const y = (clientY - offsetY) / scale;
+    return { x, y };
+  }
+
+  // =========================
+  // UI Components (modular)
+  // =========================
+  class Button {
+    constructor({ id, x, y, w, h, label, iconFn, onClick, kind="primary" }) {
+      this.id = id;
+      this.x = x; this.y = y; this.w = w; this.h = h;
+      this.label = label;
+      this.iconFn = iconFn;
+      this.onClick = onClick;
+      this.kind = kind;
+      this.enabled = true;
+    }
+    contains(px, py) {
+      return px >= this.x && px <= this.x + this.w && py >= this.y && py <= this.y + this.h;
+    }
+    draw(g) {
+      const r = 12;
+      g.save();
+      const bg = this.kind === "primary" ? "rgba(40,90,255,.22)" : "rgba(0,0,0,.25)";
+      const stroke = this.kind === "primary" ? "rgba(140,170,255,.55)" : "rgba(140,170,255,.25)";
+      g.fillStyle = bg;
+      g.strokeStyle = stroke;
+      g.lineWidth = 1;
+      roundRect(g, this.x, this.y, this.w, this.h, r);
+      g.fill();
+      g.stroke();
+
+      // Icon
+      if (this.iconFn) this.iconFn(g, this.x + 14, this.y + 14, 20, 20);
+
+      // Label
+      g.fillStyle = "rgba(235,242,255,.92)";
+      g.font = "600 12px system-ui";
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.fillText(this.label, this.x + this.w/2, this.y + this.h - 16);
+      g.restore();
+    }
+  }
+
+  class Modal {
+    constructor({ title, onClose }) {
+      this.title = title;
+      this.onClose = onClose;
+      this.visible = false;
+    }
+    open() { this.visible = true; }
+    close() { this.visible = false; if (this.onClose) this.onClose(); }
+    draw(g, rect, contentDrawFn) {
+      if (!this.visible) return;
+      const { x, y, w, h } = rect;
+
+      // Dim background
+      g.save();
+      g.fillStyle = "rgba(0,0,0,.55)";
+      g.fillRect(0, 0, BASE_W, BASE_H);
+
+      // Panel
+      const r = 16;
+      g.fillStyle = "rgba(10,18,45,.92)";
+      g.strokeStyle = "rgba(140,170,255,.35)";
+      g.lineWidth = 1;
+      roundRect(g, x, y, w, h, r);
+      g.fill();
+      g.stroke();
+
+      // Title
+      g.fillStyle = "rgba(235,242,255,.95)";
+      g.font = "700 16px system-ui";
+      g.textAlign = "left";
+      g.textBaseline = "middle";
+      g.fillText(this.title, x + 16, y + 22);
+
+      // Close button
+      const cb = { x: x + w - 44, y: y + 8, w: 36, h: 28 };
+      this._closeRect = cb;
+      g.fillStyle = "rgba(255,255,255,.08)";
+      roundRect(g, cb.x, cb.y, cb.w, cb.h, 10);
+      g.fill();
+      g.strokeStyle = "rgba(140,170,255,.25)";
+      g.stroke();
+      g.fillStyle = "rgba(235,242,255,.9)";
+      g.font = "800 14px system-ui";
+      g.textAlign = "center";
+      g.fillText("✕", cb.x + cb.w/2, cb.y + cb.h/2 + 1);
+
+      // Content
+      if (contentDrawFn) contentDrawFn(g, { x: x + 16, y: y + 46, w: w - 32, h: h - 62 });
+
+      g.restore();
+    }
+    handlePointer(px, py) {
+      if (!this.visible) return false;
+      if (this._closeRect && rectContains(this._closeRect, px, py)) {
+        this.close();
+        return true;
+      }
+      return true; // modal consumes clicks
+    }
+  }
+
+  class DialogueBox {
+    constructor({ onAdvance, onClose }) {
+      this.onAdvance = onAdvance;
+      this.onClose = onClose;
+      this.visible = false;
+      this.speaker = "";
+      this.text = "";
+      this.typed = 0; // number of characters currently revealed
+      this.typeSpeed = 55; // chars per second
+      this._lastTypeTime = null;
+    }
+    show(speaker, text) { this.visible = true; this.speaker = speaker; this.text = text; this.typed = 0; this._lastTypeTime = performance.now(); }
+    hide() { this.visible = false; }
+    draw(g, rect) {
+      if (!this.visible) return;
+      const { x, y, w, h } = rect;
+
+      g.save();
+
+      // Panel
+      g.fillStyle = "rgba(10,18,45,.90)";
+      g.strokeStyle = "rgba(140,170,255,.45)";
+      g.lineWidth = 1;
+      roundRect(g, x, y, w, h, 14);
+      g.fill();
+      g.stroke();
+
+      // Speaker pill
+      g.fillStyle = "rgba(40,90,255,.22)";
+      g.strokeStyle = "rgba(140,170,255,.55)";
+      roundRect(g, x + 12, y + 10, Math.min(200, w - 70), 26, 12);
+      g.fill();
+      g.stroke();
+
+      g.fillStyle = "rgba(235,242,255,.95)";
+      g.font = "700 12px system-ui";
+      g.textAlign = "left";
+      g.textBaseline = "middle";
+      g.fillText(this.speaker, x + 22, y + 23);
+
+      // Close
+      const cb = { x: x + w - 44, y: y + 10, w: 34, h: 26 };
+      this._closeRect = cb;
+      g.fillStyle = "rgba(255,255,255,.08)";
+      roundRect(g, cb.x, cb.y, cb.w, cb.h, 10);
+      g.fill();
+      g.strokeStyle = "rgba(140,170,255,.25)";
+      g.stroke();
+      g.fillStyle = "rgba(235,242,255,.9)";
+      g.font = "800 13px system-ui";
+      g.textAlign = "center";
+      g.fillText("✕", cb.x + cb.w/2, cb.y + cb.h/2 + 1);
+
+      // Text
+      g.fillStyle = "rgba(235,242,255,.92)";
+      g.font = "500 13px system-ui";
+      g.textAlign = "left";
+      g.textBaseline = "top";
+      // Typewriter effect: reveal characters over time
+      const now = performance.now();
+      if (this._lastTypeTime == null) this._lastTypeTime = now;
+      const dt = (now - this._lastTypeTime) / 1000; // seconds
+      const add = Math.floor(dt * this.typeSpeed);
+      if (add > 0) {
+        this.typed = Math.min(this.text.length, this.typed + add);
+        this._lastTypeTime = now;
+      }
+      const display = this.text.slice(0, this.typed || 0);
+      wrapText(g, display, x + 16, y + 44, w - 32, 18, 5);
+
+      // Hint chevron
+      g.fillStyle = "rgba(235,242,255,.75)";
+      g.font = "800 14px system-ui";
+      g.textAlign = "right";
+      g.textBaseline = "bottom";
+      g.fillText("tap ▸", x + w - 14, y + h - 10);
+
+      g.restore();
+    }
+    handlePointer(px, py, rect) {
+      if (!this.visible) return false;
+      const { x, y, w, h } = rect;
+      if (rectContains({ x, y, w, h }, px, py)) {
+        if (this._closeRect && rectContains(this._closeRect, px, py)) {
+          this.onClose?.();
+        } else {
+          // If text is still typing, reveal immediately; otherwise advance dialogue
+          if ((this.typed || 0) < this.text.length) {
+            this.typed = this.text.length;
+          } else {
+            this.onAdvance?.();
+          }
+        }
+        return true;
+      }
+      return false;
+    }
+  }
+
+  // =========================
+  // Drawing helpers
+  // =========================
+  function roundRect(g, x, y, w, h, r) {
+    const rr = Math.min(r, w/2, h/2);
+    g.beginPath();
+    g.moveTo(x + rr, y);
+    g.arcTo(x + w, y, x + w, y + h, rr);
+    g.arcTo(x + w, y + h, x, y + h, rr);
+    g.arcTo(x, y + h, x, y, rr);
+    g.arcTo(x, y, x + w, y, rr);
+    g.closePath();
+  }
+
+  function rectContains(r, px, py) {
+    return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+  }
+
+  function wrapText(g, text, x, y, maxW, lineH, maxLines) {
+    const words = text.split(/\s+/);
+    let line = "";
+    let cy = y;
+    let lines = 0;
+
+    for (let i = 0; i < words.length; i++) {
+      const test = line ? line + " " + words[i] : words[i];
+      const w = g.measureText(test).width;
+      if (w > maxW && line) {
+        g.fillText(line, x, cy);
+        line = words[i];
+        cy += lineH;
+        lines++;
+        if (lines >= maxLines - 1) break;
+      } else {
+        line = test;
+      }
+    }
+
+    if (lines < maxLines) {
+      const remaining = words.slice(words.indexOf(line.split(/\s+/)[0])).join(" ");
+      // If we broke early, append ellipsis nicely
+      if (lines === maxLines - 1 && words.length > 0) {
+        // Just render current line with ellipsis if needed
+        let final = line;
+        while (g.measureText(final + "…").width > maxW && final.length > 0) {
+          final = final.slice(0, -1);
+        }
+        g.fillText(final + (final.endsWith("…") ? "" : "…"), x, cy);
+      } else {
+        g.fillText(line, x, cy);
+      }
+    }
+  }
+
+  // =========================
+  // Icons (simple vector)
+  // =========================
+  const Icons = {
+    move(g, x, y, w, h) {
+      g.save();
+      g.strokeStyle = "rgba(235,242,255,.9)";
+      g.lineWidth = 2;
+      g.beginPath();
+      g.moveTo(x + w/2, y);
+      g.lineTo(x + w/2, y + h);
+      g.moveTo(x, y + h/2);
+      g.lineTo(x + w, y + h/2);
+      g.stroke();
+      // arrowheads
+      g.beginPath();
+      g.moveTo(x + w/2, y);
+      g.lineTo(x + w/2 - 5, y + 6);
+      g.moveTo(x + w/2, y);
+      g.lineTo(x + w/2 + 5, y + 6);
+      g.moveTo(x + w/2, y + h);
+      g.lineTo(x + w/2 - 5, y + h - 6);
+      g.moveTo(x + w/2, y + h);
+      g.lineTo(x + w/2 + 5, y + h - 6);
+      g.stroke();
+      g.restore();
+    },
+    status(g, x, y, w, h) {
+      g.save();
+      g.strokeStyle = "rgba(235,242,255,.9)";
+      g.lineWidth = 2;
+      g.beginPath();
+      g.arc(x + w/2, y + h/2, 8, 0, Math.PI*2);
+      g.stroke();
+      g.beginPath();
+      g.moveTo(x + w/2 - 12, y + h - 2);
+      g.quadraticCurveTo(x + w/2, y + h - 14, x + w/2 + 12, y + h - 2);
+      g.stroke();
+      g.restore();
+    },
+    battle(g, x, y, w, h) {
+      g.save();
+      g.strokeStyle = "rgba(235,242,255,.9)";
+      g.lineWidth = 2;
+      // crossed swords-ish
+      g.beginPath();
+      g.moveTo(x + 4, y + 4);
+      g.lineTo(x + w - 4, y + h - 4);
+      g.moveTo(x + w - 4, y + 4);
+      g.lineTo(x + 4, y + h - 4);
+      g.stroke();
+      g.restore();
+    }
+  };
+
+  // =========================
+  // Game State (simple reducer-ish)
+  // =========================
+  const state = {
+    screen: "adventure", // adventure | battle
+    locationId: "plaza",
+    dialogue: null, // { npcId, lineIndex }
+    ui: {
+      statusOpen: false,
+      moveOpen: false
+    }
+  };
+
+  // =========================
+  // Battle system
+  // =========================
+  const ENEMIES = {
+    testbot: { id: "testbot", name: "Test Bot", hp: 40, maxHp: 40, atk: 6, cooldown: 1800, image: "assets/enemy.png" },
+    rogue: { id: "rogue", name: "Rogue Drone", hp: 60, maxHp: 60, atk: 8, cooldown: 1400, image: null }
+  };
+
+  let battleState = {
+    active: false,
+    phase: "idle", // idle | intro | choice | active | ended
+    enemy: null,
+    logs: [],
+    lastEnemyAttack: 0,
+    playerLastAction: 0,
+    buttons: {}
+  };
+
+  function pushBattleLog(msg) {
+    battleState.logs.unshift({ t: performance.now(), msg });
+    if (battleState.logs.length > 6) battleState.logs.pop();
+  }
+
+  function startBattle(enemyId) {
+    const tpl = ENEMIES[enemyId] || ENEMIES.testbot;
+    battleState.enemy = Object.assign({}, tpl);
+    battleState.phase = "intro";
+    battleState.phaseStart = performance.now();
+    battleState.lastEnemyAttack = performance.now();
+    battleState.playerLastAction = 0;
+    battleState.logs = [];
+    state.screen = "battle";
+    battleState.active = true;
+    pushBattleLog("An " + battleState.enemy.name + " appeared");
+  }
+
+  function endBattle(win) {
+    battleState.phase = "ended";
+    battleState.active = false;
+    if (win) pushBattleLog("You defeated " + battleState.enemy.name + "!");
+    else pushBattleLog("You fled or were defeated.");
+    // simple return to adventure after short delay
+    setTimeout(() => { state.screen = "adventure"; battleState.phase = "idle"; }, 900);
+  }
+
+  function enemyTryAttack(now) {
+    if (!battleState.enemy) return;
+    if (now - battleState.lastEnemyAttack >= battleState.enemy.cooldown) {
+      battleState.lastEnemyAttack = now;
+      const dmg = Math.max(1, Math.round((battleState.enemy.atk) * (0.8 + Math.random() * 0.6)));
+      DATA.player.hp.cur = Math.max(0, DATA.player.hp.cur - dmg);
+      pushBattleLog(battleState.enemy.name + " hits you for " + dmg + "!");
+      if (DATA.player.hp.cur <= 0) {
+        pushBattleLog("You were defeated...");
+        endBattle(false);
+      }
+    }
+  }
+
+  function playerAttack(mode) {
+    if (!battleState.enemy || battleState.phase !== "active") return;
+    const now = performance.now();
+    if (now - battleState.playerLastAction < 400) return; // small throttle
+    battleState.playerLastAction = now;
+    let dmg = 0;
+    if (mode === "sword") dmg = 8 + Math.floor(Math.random()*6);
+    else if (mode === "gun") dmg = 5 + Math.floor(Math.random()*8);
+    else if (mode === "mix") dmg = 6 + Math.floor(Math.random()*7);
+    else dmg = 4;
+    battleState.enemy.hp = Math.max(0, battleState.enemy.hp - dmg);
+    pushBattleLog("You hit " + battleState.enemy.name + " for " + dmg + "");
+    if (battleState.enemy.hp <= 0) {
+      endBattle(true);
+    }
+  }
+
+  function getLocation() {
+    return DATA.locations[state.locationId];
+  }
+
+  function startDialogue(npcId) {
+    state.dialogue = { npcId, lineIndex: 0 };
+    const npc = getLocation().npcs.find(n => n.id === npcId);
+    dialogueBox.show(npc.name, npc.dialogue[0]);
+  }
+
+  function advanceDialogue() {
+    if (!state.dialogue) return;
+    const npc = getLocation().npcs.find(n => n.id === state.dialogue.npcId);
+    const next = state.dialogue.lineIndex + 1;
+    if (next >= npc.dialogue.length) {
+      endDialogue();
+      return;
+    }
+    state.dialogue.lineIndex = next;
+    dialogueBox.show(npc.name, npc.dialogue[next]);
+  }
+
+  function endDialogue() {
+    state.dialogue = null;
+    dialogueBox.hide();
+  }
+
+  function openStatus() { state.ui.statusOpen = true; statusModal.open(); }
+  function closeStatus() { state.ui.statusOpen = false; statusModal.close(); }
+
+  function openMove() { state.ui.moveOpen = true; }
+  function closeMove() { state.ui.moveOpen = false; }
+
+  function travel(toId) {
+    if (!DATA.locations[toId]) return;
+    state.locationId = toId;
+    closeMove();
+    endDialogue();
+  }
+
+  function goBattleTest() {
+    closeMove();
+    endDialogue();
+    closeStatus();
+    // Start a test battle immediately
+    startBattle("testbot");
+  }
+
+  function goAdventure() {
+    state.screen = "adventure";
+  }
+
+  // =========================
+  // UI Instances
+  // =========================
+  const statusModal = new Modal({
+    title: "Player Status",
+    onClose: () => { state.ui.statusOpen = false; }
+  });
+
+  const dialogueBox = new DialogueBox({
+    onAdvance: () => advanceDialogue(),
+    onClose: () => endDialogue()
+  });
+
+  // Bottom nav buttons
+  const bottomButtons = [
+    new Button({
+      id: "move",
+      x: 16, y: BASE_H - 78, w: 108, h: 62,
+      label: "Movement",
+      iconFn: Icons.move,
+      onClick: () => { state.ui.moveOpen ? closeMove() : openMove(); }
+    }),
+    new Button({
+      id: "status",
+      x: 141, y: BASE_H - 78, w: 108, h: 62,
+      label: "Status",
+      iconFn: Icons.status,
+      onClick: () => openStatus(),
+      kind: "secondary"
+    }),
+    new Button({
+      id: "battle",
+      x: 266, y: BASE_H - 78, w: 108, h: 62,
+      label: "Battle Test",
+      iconFn: Icons.battle,
+      onClick: () => goBattleTest(),
+      kind: "primary"
+    }),
+  ];
+
+  // =========================
+  // Layout constants
+  // =========================
+  const TOP_H = 64;
+  const BOTTOM_H = 96;
+
+  function getPortraitRect() {
+    // Large decorative portrait anchored near the right edge. Display-only background layer.
+    const w = 360;
+    const h = 520;
+    // position x so a larger portion of the portrait is visible (less off-screen)
+    const x = BASE_W - Math.round(w * 0.5) - 190;
+    const y = BASE_H - h - 8; // slight inset from bottom
+    return { x, y, w, h };
+  }
+
+  function getDialogueRect() {
+    return { x: 14, y: BASE_H - BOTTOM_H - 148, w: BASE_W - 28, h: 132 };
+  }
+
+  function getMoveSheetRect() {
+    return { x: 14, y: TOP_H + 12, w: BASE_W - 28, h: 260 };
+  }
+
+  function getStatusRect() {
+    return { x: 18, y: 110, w: BASE_W - 36, h: BASE_H - 220 };
+  }
+
+  // =========================
+  // Scene drawing (backgrounds + npc markers)
+  // =========================
+  function drawBackground(g, variant) {
+    g.save();
+
+    // If a background image is available for this variant, draw it as a cover.
+    const bg = bgImages[variant];
+    if (bg && bg._loaded) {
+      const iw = bg.width;
+      const ih = bg.height;
+      const scale = Math.max(BASE_W / iw, BASE_H / ih);
+      const dw = iw * scale;
+      const dh = ih * scale;
+      const dx = (BASE_W - dw) / 2;
+      const dy = (BASE_H - dh) / 2;
+      g.drawImage(bg, dx, dy, dw, dh);
+    }
+
+    // Background base gradient (overlay when image present, or full background when absent)
+    const grd = g.createLinearGradient(0, 0, 0, BASE_H);
+    const overlayAlpha = (bg && bg._loaded) ? 0.45 : 1.0;
+    if (variant === "plaza") {
+      grd.addColorStop(0, `rgba(10,26,68,${overlayAlpha})`);
+      grd.addColorStop(1, `rgba(11,16,32,${overlayAlpha})`);
+    } else if (variant === "lab") {
+      grd.addColorStop(0, `rgba(10,42,42,${overlayAlpha})`);
+      grd.addColorStop(1, `rgba(11,16,32,${overlayAlpha})`);
+    } else {
+      grd.addColorStop(0, `rgba(34,17,58,${overlayAlpha})`);
+      grd.addColorStop(1, `rgba(11,16,32,${overlayAlpha})`);
+    }
+    g.fillStyle = grd;
+    g.fillRect(0, 0, BASE_W, BASE_H);
+
+    // Futuristic geometric overlay
+    g.globalAlpha = 0.25;
+    g.strokeStyle = "rgba(140,170,255,.35)";
+    g.lineWidth = 1;
+    for (let i = 0; i < 12; i++) {
+      const y = 90 + i * 46;
+      g.beginPath();
+      g.moveTo(20, y);
+      g.lineTo(BASE_W - 20, y - 18);
+      g.stroke();
+    }
+
+    // Buildings / panels
+    g.globalAlpha = 0.85;
+    if (variant === "plaza") {
+      // big panel on right
+      g.fillStyle = "rgba(60,180,255,.22)";
+      roundRect(g, BASE_W - 180, 210, 160, 160, 16);
+      g.fill();
+      g.strokeStyle = "rgba(140,170,255,.40)";
+      g.stroke();
+      // tower
+      g.fillStyle = "rgba(255,255,255,.06)";
+      g.fillRect(46, 210, 72, 200);
+      g.strokeRect(46, 210, 72, 200);
+    } else if (variant === "lab") {
+      g.fillStyle = "rgba(60,255,220,.16)";
+      roundRect(g, 30, 190, BASE_W - 60, 190, 18);
+      g.fill();
+      g.strokeStyle = "rgba(160,255,235,.30)";
+      g.stroke();
+      // "screen"
+      g.fillStyle = "rgba(255,255,255,.07)";
+      roundRect(g, 70, 230, BASE_W - 140, 110, 14);
+      g.fill();
+    } else {
+      g.fillStyle = "rgba(255,120,255,.16)";
+      roundRect(g, 36, 210, BASE_W - 72, 210, 18);
+      g.fill();
+      g.strokeStyle = "rgba(255,180,255,.22)";
+      g.stroke();
+      // pipes
+      g.globalAlpha = 0.6;
+      g.strokeStyle = "rgba(255,180,255,.35)";
+      g.lineWidth = 6;
+      g.beginPath();
+      g.moveTo(50, 180);
+      g.lineTo(50, 360);
+      g.stroke();
+      g.lineWidth = 2;
+      g.globalAlpha = 0.85;
+    }
+
+    // Ground
+    g.globalAlpha = 1;
+    g.fillStyle = "rgba(255,255,255,.06)";
+    g.fillRect(0, BASE_H - 250, BASE_W, 250);
+
+    // Stairs/platform like the reference
+    g.fillStyle = "rgba(10,18,45,.75)";
+    roundRect(g, 0, BASE_H - 240, BASE_W, 170, 18);
+    g.fill();
+    g.strokeStyle = "rgba(140,170,255,.30)";
+    g.stroke();
+
+    g.restore();
+  }
+
+  function drawNpcMarkers(g, location) {
+    g.save();
+    for (const npc of location.npcs) {
+      const x = npc.marker.xPct * BASE_W;
+      const y = npc.marker.yPct * BASE_H;
+
+      // If we have an image for this NPC, draw it as a circular portrait
+      const img = npcImages[npc.id];
+      if (img && img._loaded) {
+        const radius = 34;
+        const size = radius * 2;
+        // draw circular clipped image centered at marker
+        g.save();
+        g.beginPath();
+        g.arc(x, y, radius, 0, Math.PI * 2);
+        g.closePath();
+        g.clip();
+        // draw image covering the circle (preserve aspect by cover)
+        const iw = img.width, ih = img.height;
+        const srcFrac = npc.srcFrac || 1.0; // if provided, draw top portion only
+        const srcH = Math.max(1, Math.round(ih * srcFrac));
+        const scale = Math.max(size / iw, size / srcH);
+        const dw = Math.round(iw * scale), dh = Math.round(srcH * scale);
+        const dx = Math.round(x - dw / 2), dy = Math.round(y - dh / 2);
+        // drawImage(sx,sy,swidth,sheight, dx,dy,dwidth,dheight)
+        g.drawImage(img, 0, 0, iw, srcH, dx, dy, dw, dh);
+        g.restore();
+
+        // ring + glow
+        g.beginPath();
+        g.arc(x, y, radius + 4, 0, Math.PI * 2);
+        g.fillStyle = "rgba(40,90,255,.12)";
+        g.fill();
+        g.strokeStyle = "rgba(140,170,255,.65)";
+        g.lineWidth = 2;
+        g.stroke();
+      } else {
+        // Marker ring fallback
+        g.fillStyle = "rgba(40,90,255,.20)";
+        g.strokeStyle = "rgba(140,170,255,.65)";
+        g.lineWidth = 2;
+        g.beginPath();
+        g.arc(x, y, 22, 0, Math.PI*2);
+        g.fill();
+        g.stroke();
+
+        // Inner dot
+        g.fillStyle = "rgba(235,242,255,.92)";
+        g.beginPath();
+        g.arc(x, y, 4, 0, Math.PI*2);
+        g.fill();
+      }
+
+      // Name tag under marker
+      g.fillStyle = "rgba(0,0,0,.35)";
+      g.strokeStyle = "rgba(140,170,255,.25)";
+      roundRect(g, x - 52, y + 26, 104, 22, 10);
+      g.fill();
+      g.stroke();
+
+      g.fillStyle = "rgba(235,242,255,.9)";
+      g.font = "700 11px system-ui";
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.fillText(npc.name, x, y + 37);
+    }
+    g.restore();
+  }
+
+  function npcHitTest(px, py, location) {
+    for (const npc of location.npcs) {
+      const x = npc.marker.xPct * BASE_W;
+      const y = npc.marker.yPct * BASE_H;
+      const dx = px - x;
+      const dy = py - y;
+      if (dx*dx + dy*dy <= 26*26) return npc;
+    }
+    return null;
+  }
+
+  // =========================
+  // HUD (top bar, bottom bar, portrait)
+  // =========================
+  function drawTopBar(g) {
+    g.save();
+    // Bar
+    g.fillStyle = "rgba(10,18,45,.90)";
+    g.fillRect(0, 0, BASE_W, TOP_H);
+    g.strokeStyle = "rgba(140,170,255,.25)";
+    g.beginPath();
+    g.moveTo(0, TOP_H);
+    g.lineTo(BASE_W, TOP_H);
+    g.stroke();
+
+    // Location title
+    g.fillStyle = "rgba(235,242,255,.95)";
+    g.font = "800 14px system-ui";
+    g.textAlign = "left";
+    g.textBaseline = "middle";
+    g.fillText(getLocation().name, 14, 18);
+
+    // HP/EN
+    const p = DATA.player;
+    drawStatPill(g, 14, 30, 150, 24, "HP", p.hp.cur, p.hp.max, "rgba(255,90,120,.85)");
+    drawStatPill(g, 172, 30, 120, 24, "EN", p.en.cur, p.en.max, "rgba(60,200,255,.85)");
+
+    // currencies right
+    g.textAlign = "right";
+    g.font = "700 12px system-ui";
+    g.fillStyle = "rgba(235,242,255,.92)";
+    g.fillText("🪙 " + p.coins, BASE_W - 14, 20);
+    g.fillText("💎 " + p.gems, BASE_W - 14, 42);
+
+    g.restore();
+  }
+
+  function drawStatPill(g, x, y, w, h, label, cur, max, accent) {
+    g.save();
+    g.fillStyle = "rgba(255,255,255,.08)";
+    g.strokeStyle = "rgba(140,170,255,.22)";
+    roundRect(g, x, y, w, h, 12);
+    g.fill();
+    g.stroke();
+
+    // fill bar
+    const pad = 3;
+    const innerW = w - pad*2;
+    const pct = clamp(cur / max, 0, 1);
+    g.fillStyle = "rgba(255,255,255,.06)";
+    roundRect(g, x + pad, y + pad, innerW, h - pad*2, 10);
+    g.fill();
+
+    g.fillStyle = accent;
+    roundRect(g, x + pad, y + pad, innerW * pct, h - pad*2, 10);
+    g.fill();
+
+    // text
+    g.fillStyle = "rgba(235,242,255,.92)";
+    g.font = "700 11px system-ui";
+    g.textAlign = "left";
+    g.textBaseline = "middle";
+    g.fillText(label + " " + cur + "/" + max, x + 10, y + h/2);
+
+    g.restore();
+  }
+
+  function drawBottomBar(g) {
+    g.save();
+
+    // base
+    g.fillStyle = "rgba(10,18,45,.92)";
+    roundRect(g, 0, BASE_H - BOTTOM_H, BASE_W, BOTTOM_H, 18);
+    g.fill();
+    g.strokeStyle = "rgba(140,170,255,.25)";
+    g.lineWidth = 1;
+    g.beginPath();
+    g.moveTo(0, BASE_H - BOTTOM_H);
+    g.lineTo(BASE_W, BASE_H - BOTTOM_H);
+    g.stroke();
+
+    // Buttons
+    for (const b of bottomButtons) b.draw(g);
+
+    g.restore();
+  }
+
+  function drawPortrait(g) {
+    const r = getPortraitRect();
+    g.save();
+    // Decorative (non-interactive) portrait area — invisible hit box only
+    g.fillStyle = "rgba(0,0,0,0)";
+    g.strokeStyle = "rgba(0,0,0,0)";
+    roundRect(g, r.x, r.y, r.w, r.h, 18);
+
+    // Draw avatar image if loaded. Crop to show mostly the bust/top and lower opacity
+    if (avatarImg.complete && avatarImg.naturalWidth > 0) {
+      const padding = 6;
+      const nw = avatarImg.naturalWidth;
+      const nh = avatarImg.naturalHeight;
+      // show top portion (bust) of the source image — adjust frac to tune how much torso shows
+      const srcFrac = 0.62; // top 62% of image
+      const srcH = Math.max(1, Math.round(nh * srcFrac));
+      // Scale to fill width of portrait, but preserve aspect ratio
+      const scale = Math.min((r.w - padding*2) / nw, (r.h - padding*2) / srcH);
+      const drawW = Math.round(nw * scale);
+      const drawH = Math.round(srcH * scale);
+      // Anchor image to bottom-right of entire screen area (so it sits in corner)
+      const imgX = r.x + r.w - drawW - padding;
+      const imgY = r.y + r.h - drawH - padding;
+      g.save();
+      g.globalAlpha = 0.90; // reduce opacity by 10%
+      // drawImage(sx,sy,swidth,sheight, dx,dy,dwidth,dheight) — take top portion of source
+      g.drawImage(avatarImg, 0, 0, nw, srcH, imgX, imgY, drawW, drawH);
+      g.restore();
+    } else {
+      // Fallback: placeholder
+      const cx = r.x + r.w/2;
+      const cy = r.y + r.h/2 - 6;
+      g.fillStyle = "rgba(235,242,255,.10)";
+      g.beginPath();
+      g.arc(cx, cy - 12, 20, 0, Math.PI*2);
+      g.fill();
+      g.beginPath();
+      g.arc(cx, cy + 20, 34, Math.PI, Math.PI*2);
+      g.fill();
+    }
+
+    // Player name (subtle) — keep it visible but small above portrait bottom
+    g.fillStyle = "rgba(235,242,255,.92)";
+    g.font = "700 12px system-ui";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText(DATA.player.name + "  Lv." + DATA.player.level, r.x + r.w/2, r.y + r.h - 14);
+
+    g.restore();
+  }
+
+  // =========================
+  // Movement sheet (drawer)
+  // =========================
+  function drawMoveSheet(g) {
+    if (!state.ui.moveOpen) return;
+
+    const r = getMoveSheetRect();
+    g.save();
+
+    // Panel
+    g.fillStyle = "rgba(10,18,45,.92)";
+    g.strokeStyle = "rgba(140,170,255,.35)";
+    roundRect(g, r.x, r.y, r.w, r.h, 16);
+    g.fill();
+    g.stroke();
+
+    g.fillStyle = "rgba(235,242,255,.95)";
+    g.font = "800 14px system-ui";
+    g.textAlign = "left";
+    g.textBaseline = "middle";
+    g.fillText("Movement", r.x + 14, r.y + 22);
+
+    // Close chip
+    const cb = { x: r.x + r.w - 62, y: r.y + 10, w: 48, h: 26 };
+    moveCloseRect = cb;
+    g.fillStyle = "rgba(255,255,255,.08)";
+    roundRect(g, cb.x, cb.y, cb.w, cb.h, 10);
+    g.fill();
+    g.strokeStyle = "rgba(140,170,255,.25)";
+    g.stroke();
+    g.fillStyle = "rgba(235,242,255,.9)";
+    g.font = "800 12px system-ui";
+    g.textAlign = "center";
+    g.fillText("Close", cb.x + cb.w/2, cb.y + cb.h/2);
+
+    // List connections
+    const loc = getLocation();
+    const items = loc.connections.map(id => ({ id, name: DATA.locations[id].name }));
+    const listX = r.x + 12;
+    const listY = r.y + 46;
+    const itemH = 52;
+
+    moveItemRects = [];
+    for (let i = 0; i < items.length; i++) {
+      const iy = listY + i * (itemH + 10);
+      const itemR = { x: listX, y: iy, w: r.w - 24, h: itemH, id: items[i].id };
+      moveItemRects.push(itemR);
+
+      g.fillStyle = "rgba(255,255,255,.06)";
+      g.strokeStyle = "rgba(140,170,255,.22)";
+      roundRect(g, itemR.x, itemR.y, itemR.w, itemR.h, 14);
+      g.fill();
+      g.stroke();
+
+      g.fillStyle = "rgba(235,242,255,.95)";
+      g.font = "700 13px system-ui";
+      g.textAlign = "left";
+      g.textBaseline = "middle";
+      g.fillText(items[i].name, itemR.x + 14, itemR.y + itemH/2);
+
+      g.textAlign = "right";
+      g.fillStyle = "rgba(235,242,255,.65)";
+      g.font = "800 14px system-ui";
+      g.fillText("›", itemR.x + itemR.w - 14, itemR.y + itemH/2);
+    }
+
+    g.restore();
+  }
+
+  let moveItemRects = [];
+  let moveCloseRect = null;
+
+  // =========================
+  // Battle Test screen (stub)
+  // =========================
+  function drawBattleScreen(g) {
+    g.save();
+    // simple battle background
+    const grd = g.createLinearGradient(0, 0, 0, BASE_H);
+    grd.addColorStop(0, "#18081a");
+    grd.addColorStop(1, "#051022");
+    g.fillStyle = grd;
+    g.fillRect(0, 0, BASE_W, BASE_H);
+
+    const now = performance.now();
+    const bs = battleState;
+
+    // Enemy center area
+    if (bs.enemy) {
+      const ex = BASE_W/2;
+      const ey = 140;
+      // Draw enemy avatar (if image loaded)
+      if (bs.enemy.image) {
+        const img = new Image();
+        img.src = bs.enemy.image; // quick load; if not present it will fail silently
+        if (img.complete) {
+          const iw = img.width, ih = img.height;
+          const scale = Math.min(180/iw, 180/ih);
+          const dw = iw * scale, dh = ih * scale;
+          g.drawImage(img, ex - dw/2, ey - dh/2, dw, dh);
+        } else {
+          // placeholder box while image loads
+          g.fillStyle = "rgba(255,255,255,.06)";
+          roundRect(g, ex - 60, ey - 60, 120, 120, 12);
+          g.fill();
+        }
+      } else {
+        g.fillStyle = "rgba(255,255,255,.06)";
+        roundRect(g, ex - 60, ey - 60, 120, 120, 12);
+        g.fill();
+      }
+
+      // Enemy HP bar
+      const barW = 220;
+      const barX = ex - barW/2;
+      const barY = ey + 80;
+      g.fillStyle = "rgba(255,255,255,.06)";
+      roundRect(g, barX, barY, barW, 16, 8);
+      g.fill();
+      const pct = bs.enemy.hp / bs.enemy.maxHp;
+      g.fillStyle = "rgba(255,110,110,.95)";
+      roundRect(g, barX + 2, barY + 2, (barW - 4) * pct, 12, 6);
+      g.fill();
+      g.fillStyle = "rgba(235,242,255,.95)";
+      g.font = "700 12px system-ui";
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.fillText(bs.enemy.name + "  " + Math.max(0, bs.enemy.hp) + "/" + bs.enemy.maxHp, ex, barY + 8);
+    }
+
+    // Phase handling
+    if (bs.phase === "intro") {
+      // show intro message for a short time then show choices
+      g.fillStyle = "rgba(235,242,255,.95)";
+      g.font = "700 18px system-ui";
+      g.textAlign = "center";
+      g.fillText("An " + (bs.enemy?.name || "Enemy") + " appeared", BASE_W/2, BASE_H/2 - 40);
+      if (now - bs.phaseStart > 900) {
+        bs.phase = "choice";
+        bs.phaseStart = now;
+      }
+    }
+
+    // Choice phase: Fight or Flee
+    if (bs.phase === "choice") {
+      const cw = 130, ch = 46;
+      const left = { x: BASE_W/2 - cw - 12, y: BASE_H/2 + 10, w: cw, h: ch };
+      const right = { x: BASE_W/2 + 12, y: BASE_H/2 + 10, w: cw, h: ch };
+      bs.buttons.choiceFight = left;
+      bs.buttons.choiceFlee = right;
+
+      g.fillStyle = "rgba(40,90,255,.22)";
+      roundRect(g, left.x, left.y, left.w, left.h, 12); g.fill(); g.strokeStyle = "rgba(140,170,255,.45)"; g.stroke();
+      g.fillStyle = "rgba(235,242,255,.95)"; g.font = "700 14px system-ui"; g.textAlign = "center"; g.fillText("Fight", left.x + left.w/2, left.y + left.h/2);
+
+      g.fillStyle = "rgba(255,255,255,.08)";
+      roundRect(g, right.x, right.y, right.w, right.h, 12); g.fill(); g.strokeStyle = "rgba(140,170,255,.25)"; g.stroke();
+      g.fillStyle = "rgba(235,242,255,.95)"; g.fillText("Flee", right.x + right.w/2, right.y + right.h/2);
+    }
+
+    // Active battle: draw player avatar bottom-center and action buttons
+    if (bs.phase === "active") {
+      const px = BASE_W/2;
+      const py = BASE_H - 140;
+      // Player portrait
+      if (avatarImg.complete && avatarImg.naturalWidth > 0) {
+        const iw = avatarImg.naturalWidth, ih = avatarImg.naturalHeight;
+        const scale = Math.min(120/iw, 120/ih);
+        const dw = iw * scale, dh = ih * scale;
+        g.drawImage(avatarImg, px - dw/2, py - dh/2, dw, dh);
+      } else {
+        g.fillStyle = "rgba(255,255,255,.06)"; roundRect(g, px-56, py-56, 112, 112, 12); g.fill();
+      }
+
+      // Action buttons: left (Sword, Gun), right (Mix, Item)
+      const bw = 100, bh = 42;
+      const leftTop = { x: 28, y: BASE_H - 200, w: bw, h: bh };
+      const leftBot = { x: 28, y: BASE_H - 140, w: bw, h: bh };
+      const rightTop = { x: BASE_W - 28 - bw, y: BASE_H - 200, w: bw, h: bh };
+      const rightBot = { x: BASE_W - 28 - bw, y: BASE_H - 140, w: bw, h: bh };
+      bs.buttons.leftSword = leftTop; bs.buttons.leftGun = leftBot; bs.buttons.rightMix = rightTop; bs.buttons.rightItem = rightBot;
+
+      // draw buttons
+      const drawAction = (r, label, primary=false) => {
+        g.fillStyle = primary ? "rgba(40,90,255,.24)" : "rgba(255,255,255,.06)";
+        roundRect(g, r.x, r.y, r.w, r.h, 12); g.fill();
+        g.strokeStyle = primary ? "rgba(140,170,255,.55)" : "rgba(140,170,255,.25)"; g.stroke();
+        g.fillStyle = "rgba(235,242,255,.95)"; g.font = "700 13px system-ui"; g.textAlign = "center"; g.textBaseline = "middle";
+        g.fillText(label, r.x + r.w/2, r.y + r.h/2);
+      };
+      drawAction(leftTop, "Sword Mode", true);
+      drawAction(leftBot, "Gun Mode", false);
+      drawAction(rightTop, "Mix", false);
+      drawAction(rightBot, "Item", false);
+
+      // enemy auto-attack
+      enemyTryAttack(now);
+    }
+
+    // Logs (bottom-left)
+    g.fillStyle = "rgba(255,255,255,.06)";
+    roundRect(g, 12, BASE_H - 320, 220, 120, 10); g.fill();
+    g.fillStyle = "rgba(235,242,255,.9)"; g.font = "500 12px system-ui"; g.textAlign = "left";
+    let ly = BASE_H - 308;
+    for (const l of (battleState.logs || [])) { g.fillText(l.msg, 20, ly); ly += 18; }
+
+    // Ended phase: small overlay
+    if (bs.phase === "ended") {
+      g.fillStyle = "rgba(0,0,0,.45)"; g.fillRect(0, 0, BASE_W, BASE_H);
+      g.fillStyle = "rgba(235,242,255,.95)"; g.font = "800 18px system-ui"; g.textAlign = "center"; g.fillText(bs.logs[0]?.msg || "Battle ended", BASE_W/2, BASE_H/2);
+    }
+
+    g.restore();
+  }
+  let battleBackRect = null;
+
+  // =========================
+  // Status modal content
+  // =========================
+  function drawStatusContent(g, area) {
+    const p = DATA.player;
+
+    // Left: stats
+    g.fillStyle = "rgba(255,255,255,.06)";
+    g.strokeStyle = "rgba(140,170,255,.22)";
+    roundRect(g, area.x, area.y, area.w, 120, 16);
+    g.fill();
+    g.stroke();
+
+    g.fillStyle = "rgba(235,242,255,.95)";
+    g.font = "800 14px system-ui";
+    g.textAlign = "left";
+    g.textBaseline = "top";
+    g.fillText(p.name + "  (Lv. " + p.level + ")", area.x + 14, area.y + 14);
+
+    g.font = "600 13px system-ui";
+    g.fillStyle = "rgba(235,242,255,.85)";
+    g.fillText("HP: " + p.hp.cur + "/" + p.hp.max, area.x + 14, area.y + 44);
+    g.fillText("EN: " + p.en.cur + "/" + p.en.max, area.x + 14, area.y + 66);
+    g.fillText("Coins: " + p.coins, area.x + 14, area.y + 88);
+    g.fillText("Gems: " + p.gems, area.x + 14, area.y + 110);
+
+    // Inventory
+    const invY = area.y + 140;
+    g.fillStyle = "rgba(255,255,255,.06)";
+    g.strokeStyle = "rgba(140,170,255,.22)";
+    roundRect(g, area.x, invY, area.w, area.h - 160, 16);
+    g.fill();
+    g.stroke();
+
+    g.fillStyle = "rgba(235,242,255,.95)";
+    g.font = "800 14px system-ui";
+    g.textAlign = "left";
+    g.textBaseline = "top";
+    g.fillText("Inventory (stub)", area.x + 14, invY + 14);
+
+    g.fillStyle = "rgba(235,242,255,.85)";
+    g.font = "500 13px system-ui";
+    let y = invY + 44;
+    for (const item of p.inventory) {
+      g.fillText("• " + item, area.x + 18, y);
+      y += 22;
+    }
+    if (!p.inventory.length) {
+      g.fillText("(empty)", area.x + 18, y);
+    }
+
+    g.fillStyle = "rgba(235,242,255,.65)";
+    g.font = "500 12px system-ui";
+    g.fillText("Tip: Inventory is an array in DATA.player.inventory.", area.x + 14, invY + (area.h - 160) - 18);
+  }
+
+  // =========================
+  // Load your avatar image
+  // =========================
+  const avatarImg = new Image();
+  avatarImg.src = "assets/playerFull.png"; // playerFull character
+
+  // Background images map (try common filenames). Each entry will be an Image or null.
+  const bgImages = {};
+  function tryLoadBg(variant, candidates, idx = 0) {
+    if (!candidates || idx >= candidates.length) {
+      bgImages[variant] = null;
+      return;
+    }
+    const img = new Image();
+    img.onload = () => { img._loaded = true; bgImages[variant] = img; };
+    img.onerror = () => { tryLoadBg(variant, candidates, idx + 1); };
+    img.src = candidates[idx];
+  }
+
+  // Start loading background images for each defined location variant
+  for (const vid of Object.keys(DATA.locations)) {
+    const loc = DATA.locations[vid];
+    const variant = loc.backgroundVariant || vid;
+    if (loc.backgroundImage) {
+      const img = new Image();
+      img.onload = () => { img._loaded = true; bgImages[variant] = img; };
+      img.onerror = () => { bgImages[variant] = null; };
+      img.src = loc.backgroundImage;
+    } else {
+      const candidates = [
+        `assets/${variant}.png`,
+        `assets/${variant}.jpg`,
+        `assets/${variant}.webp`,
+        `assets/bg-${variant}.png`,
+        `assets/bg-${variant}.jpg`,
+        `assets/bg-${variant}.webp`
+      ];
+      tryLoadBg(variant, candidates, 0);
+    }
+  }
+
+  // =========================
+  // NPC images (per NPC id) — try explicit `npc.image` first, then candidate names
+  // =========================
+  const npcImages = {};
+  function tryLoadNpcImage(id, candidates, idx = 0) {
+    if (!candidates || idx >= candidates.length) { npcImages[id] = null; return; }
+    const img = new Image();
+    img.onload = () => { img._loaded = true; npcImages[id] = img; };
+    img.onerror = () => { tryLoadNpcImage(id, candidates, idx + 1); };
+    img.src = candidates[idx];
+  }
+
+  for (const locId of Object.keys(DATA.locations)) {
+    const loc = DATA.locations[locId];
+    for (const npc of loc.npcs) {
+      if (npc.image) {
+        const img = new Image();
+        img.onload = () => { img._loaded = true; npcImages[npc.id] = img; };
+        img.onerror = () => { npcImages[npc.id] = null; };
+        img.src = npc.image;
+        continue;
+      }
+      const candidates = [
+        `assets/npc-${npc.id}.png`,
+        `assets/npc-${npc.id}.webp`,
+        `assets/${npc.id}.png`,
+        `assets/${npc.id}.webp`
+      ];
+      tryLoadNpcImage(npc.id, candidates, 0);
+    }
+  }
+
+  // =========================
+  // Input handling
+  // =========================
+  function handleTap(clientX, clientY) {
+    const { x: px, y: py } = toLocal(clientX, clientY);
+
+    // Screen-specific handling
+    if (state.screen === "battle") {
+      // Battle-specific input handling
+      const bs = battleState;
+      // choice phase: Fight / Flee
+      if (bs.phase === 'choice') {
+        const f = bs.buttons.choiceFight;
+        const fl = bs.buttons.choiceFlee;
+        if (f && rectContains(f, px, py)) {
+          bs.phase = 'active';
+          bs.phaseStart = performance.now();
+          return;
+        }
+        if (fl && rectContains(fl, px, py)) {
+          endBattle(false);
+          return;
+        }
+      }
+
+      // active phase: action buttons
+      if (bs.phase === 'active') {
+        const s = bs.buttons.leftSword;
+        const gbtn = bs.buttons.leftGun;
+        const mix = bs.buttons.rightMix;
+        const item = bs.buttons.rightItem;
+        if (s && rectContains(s, px, py)) { playerAttack('sword'); return; }
+        if (gbtn && rectContains(gbtn, px, py)) { playerAttack('gun'); return; }
+        if (mix && rectContains(mix, px, py)) { playerAttack('mix'); return; }
+        if (item && rectContains(item, px, py)) { pushBattleLog('Used item (stub)'); return; }
+      }
+
+      // allow return to adventure via back rect if set
+      if (battleBackRect && rectContains(battleBackRect, px, py)) { goAdventure(); return; }
+      return;
+    }
+
+    // Adventure screen:
+    // 1) Status modal eats clicks if open
+    if (statusModal.visible) {
+      statusModal.handlePointer(px, py);
+      return;
+    }
+
+    // 2) Dialogue box
+    const dRect = getDialogueRect();
+    if (dialogueBox.handlePointer(px, py, dRect)) return;
+
+    // 3) Movement sheet
+    if (state.ui.moveOpen) {
+      if (moveCloseRect && rectContains(moveCloseRect, px, py)) {
+        closeMove();
+        return;
+      }
+      for (const r of moveItemRects) {
+        if (rectContains(r, px, py)) {
+          travel(r.id);
+          return;
+        }
+      }
+      // clicks outside sheet closes it
+      const sheet = getMoveSheetRect();
+      if (!rectContains(sheet, px, py)) {
+        closeMove();
+        return;
+      }
+      return;
+    }
+
+    // 4) Bottom buttons
+    for (const b of bottomButtons) {
+      if (b.contains(px, py)) {
+        b.onClick?.();
+        return;
+      }
+    }
+
+    // 5) Portrait
+    // Portrait is decorative and not interactive (clicks fall through)
+
+    // 6) NPC markers in scene area
+    const loc = getLocation();
+    const npc = npcHitTest(px, py, loc);
+    if (npc) {
+      startDialogue(npc.id);
+      return;
+    }
+  }
+
+  canvas.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    handleTap(e.clientX, e.clientY);
+  }, { passive: false });
+
+  // =========================
+  // Main render loop
+  // =========================
+  function draw() {
+    ctx.clearRect(0, 0, BASE_W, BASE_H);
+
+    if (state.screen === "battle") {
+      drawBattleScreen(ctx);
+      requestAnimationFrame(draw);
+      return;
+    }
+
+    // Adventure screen
+    const loc = getLocation();
+
+    drawBackground(ctx, loc.backgroundVariant);
+    // Draw decorative portrait as a background layer so UI sits on top
+    drawPortrait(ctx);
+    drawTopBar(ctx);
+    drawNpcMarkers(ctx, loc);
+    drawBottomBar(ctx);
+    drawMoveSheet(ctx);
+
+    // Dialogue last so it's on top (but under status modal)
+    dialogueBox.draw(ctx, getDialogueRect());
+
+    // Status modal (top-most)
+    statusModal.draw(ctx, getStatusRect(), drawStatusContent);
+
+    requestAnimationFrame(draw);
+  }
+  draw();
+
+})();
+</script>
+</body>
+</html>

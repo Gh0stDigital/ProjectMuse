@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>Portrait Adventure UI — Canvas Prototype</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #0b1020;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      color: #e9f0ff;
+      overflow: hidden;
+      touch-action: none;
+    }
+    #wrap {
+      height: 100%;
+      display: grid;
+      place-items: center;
+    }
+    canvas {
+      background: #0b1020;
+      border-radius: 18px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.45);
+      image-rendering: crisp-edges;
+    }
+    .hint {
+      position: fixed;
+      left: 12px;
+      bottom: 12px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(0,0,0,.35);
+      border: 1px solid rgba(140,170,255,.25);
+      backdrop-filter: blur(6px);
+      font-size: 12px;
+      line-height: 1.2;
+      max-width: 360px;
+    }
+    .hint b { font-weight: 700; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="game" width="390" height="844" aria-label="canvas game"></canvas>
+  </div>
+  <div class="hint">
+    <b>Canvas Prototype Controls</b><br/>
+    Tap NPC markers to talk • Tap dialogue box to advance • Movement/Status/Battle buttons at bottom • Tap portrait to open status
+  <script type="module" src="js/game.js"></script>
+</body>
+</html>
