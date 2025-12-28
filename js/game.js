@@ -11,6 +11,64 @@ export const apartmentModal = new ui.Modal({ title: "Personal Computer", onClose
 let apartmentModalRect = null;
 let apartmentOptionRects = [];
 let apartmentSelected = null;
+// Mix upload modal and state
+export const mixModal = new ui.Modal({ title: "Track Metadata", onClose: () => {} });
+let mixMeta = null;
+let _mixFileInput = null;
+
+function drawMixModalContent(g, area) {
+  g.save();
+  g.fillStyle = "rgba(235,242,255,.95)"; g.font = "700 14px system-ui"; g.textAlign = "left"; g.textBaseline = "top";
+  if (!mixMeta) {
+    g.fillText("No file selected.", area.x + 12, area.y + 12);
+    g.restore();
+    return;
+  }
+  const pad = 12; let y = area.y + pad;
+  g.fillText("Name:", area.x + pad, y); g.font = "500 13px system-ui"; g.fillText(mixMeta.name || "-", area.x + 110, y); y += 22;
+  g.font = "700 14px system-ui"; g.fillText("Type:", area.x + pad, y); g.font = "500 13px system-ui"; g.fillText(mixMeta.type || "-", area.x + 110, y); y += 22;
+  g.font = "700 14px system-ui"; g.fillText("Size:", area.x + pad, y); g.font = "500 13px system-ui"; g.fillText((mixMeta.size ? (Math.round(mixMeta.size/1024) + ' KB') : '-') , area.x + 110, y); y += 22;
+  g.font = "700 14px system-ui"; g.fillText("Duration:", area.x + pad, y); g.font = "500 13px system-ui"; g.fillText((mixMeta.duration ? (Math.round(mixMeta.duration) + ' s') : '-'), area.x + 110, y); y += 28;
+  g.font = "700 14px system-ui"; g.fillText("Raw metadata (debug):", area.x + pad, y); y += 20;
+  g.font = "500 12px system-ui"; core.wrapText(g, JSON.stringify(mixMeta.raw || {}, null, 2), area.x + pad, y, area.w - pad*2, 16, 10);
+  g.restore();
+}
+
+function ensureMixInput() {
+  if (_mixFileInput) return _mixFileInput;
+  _mixFileInput = document.createElement('input');
+  _mixFileInput.type = 'file';
+  _mixFileInput.accept = 'audio/*';
+  _mixFileInput.style.display = 'none';
+  _mixFileInput.addEventListener('change', (ev) => {
+    const f = _mixFileInput.files && _mixFileInput.files[0];
+    if (f) handleMixFile(f);
+  });
+  try { document.body.appendChild(_mixFileInput); } catch (e) {}
+  return _mixFileInput;
+}
+
+function requestMixUpload() {
+  const inp = ensureMixInput();
+  try { inp.value = null; inp.click(); } catch (e) { alert('Unable to open file picker.'); }
+}
+
+function handleMixFile(file) {
+  // gather basic metadata: name, size, type, duration (via audio element)
+  mixMeta = { name: file.name, size: file.size, type: file.type, raw: {} };
+  const url = URL.createObjectURL(file);
+  const a = document.createElement('audio');
+  a.preload = 'metadata';
+  a.src = url;
+  const clear = () => { try { URL.revokeObjectURL(url); a.src = ''; } catch(e){} };
+  a.addEventListener('loadedmetadata', () => {
+    mixMeta.duration = Math.round(a.duration || 0);
+    mixMeta.raw = { kind: 'basic' };
+    clear();
+    mixModal.open();
+  }, { once: true });
+  a.addEventListener('error', () => { mixMeta.duration = null; mixModal.open(); clear(); }, { once: true });
+}
 
 function drawApartmentModalContent(g, area) {
   // draw list of options on the left and a description pane on the right
@@ -172,7 +230,7 @@ export function handleTap(clientX, clientY) {
       const s = bs.buttons.leftSword; const gbtn = bs.buttons.leftGun; const mix = bs.buttons.rightMix; const item = bs.buttons.rightItem;
       if (s && core.rectContains(s, px, py)) { battle.startSwordQTE(); return; }
       if (gbtn && core.rectContains(gbtn, px, py)) { battle.playerAttack('gun'); return; }
-      if (mix && core.rectContains(mix, px, py)) { battle.playerAttack('mix'); return; }
+      if (mix && core.rectContains(mix, px, py)) { requestMixUpload(); return; }
       if (item && core.rectContains(item, px, py)) { battle.pushBattleLog('Used item (stub)'); return; }
     }
     if (bs.phase === 'qte') {
@@ -245,6 +303,7 @@ function startApp() {
     core.ctx.clearRect(0, 0, core.BASE_W, core.BASE_H);
     if (core.state.screen === "battle") {
       ui.drawBattleScreen(core.ctx, battle.battleState, core.avatarImg, battle.playerAttack, battle.endBattle, battle.pushBattleLog);
+      drawMixModalIfNeeded(core.ctx);
       requestAnimationFrame(draw);
       return;
     }
@@ -279,6 +338,13 @@ function drawApartmentModalIfNeeded(g) {
   const w = Math.min(core.BASE_W - 28, 360); const h = 340; const x = Math.round((core.BASE_W - w) / 2); const y = Math.round((core.BASE_H - h) / 2);
   apartmentModalRect = { x, y, w, h };
   apartmentModal.draw(g, apartmentModalRect, drawApartmentModalContent);
+}
+
+function drawMixModalIfNeeded(g) {
+  if (!mixModal.visible) return;
+  const w = Math.min(core.BASE_W - 28, 420); const h = Math.min(320, core.BASE_H - 140); const x = Math.round((core.BASE_W - w) / 2); const y = Math.round((core.BASE_H - h) / 2);
+  const rect = { x, y, w, h };
+  mixModal.draw(g, rect, drawMixModalContent);
 }
 
 if (core.canvas && core.ctx) {
