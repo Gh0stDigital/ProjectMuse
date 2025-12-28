@@ -1,4 +1,4 @@
-const CACHE_NAME = 'muse-proto-v1';
+const CACHE_NAME = 'muse-proto-v2';
 const CORE_ASSETS = [
   '/',
   '/index.html',
@@ -40,17 +40,20 @@ self.addEventListener('fetch', (e) => {
   const req = e.request;
   // only handle GET requests
   if (req.method !== 'GET') return;
+  // Network-first: try network, fall back to cache, then fallback page
   e.respondWith(
-    caches.match(req).then(cached => cached || fetch(req).then(net => {
+    fetch(req).then(netRes => {
       // update cache for same-origin resources
       try {
         const url = new URL(req.url);
         if (url.origin === location.origin) {
-          const copy = net.clone();
+          const copy = netRes.clone();
           caches.open(CACHE_NAME).then(cache => cache.put(req, copy));
         }
       } catch (err) {}
-      return net;
-    }).catch(() => caches.match('/index.html')))
+      return netRes;
+    }).catch(() => {
+      return caches.match(req).then(cached => cached || caches.match('/index.html'));
+    })
   );
 });

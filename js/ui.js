@@ -538,13 +538,42 @@ export function drawBattleScreen(g, battleState, avatarImg, playerAttack, endBat
     g.beginPath(); g.fillStyle = "rgba(235,242,255,1)"; g.shadowColor = "rgba(60,140,255,.35)"; g.shadowBlur = 14; g.arc(px, meterY + meterH / 2, 8, 0, Math.PI * 2); g.fill(); g.shadowBlur = 0;
 
     // execute button centered below meter with larger hit area
-    const exW = Math.min(140, Math.round(meterW * 0.34)); const exH = 48; const exX = meterX + Math.round((meterW - exW) / 2); const exY = meterY + meterH + 18;
-    // increase clickable area slightly
-    bs.buttons.qteExecute = { x: exX - 8, y: exY - 8, w: exW + 16, h: exH + 16 };
+    // On touch / phone devices make the button larger, circular and lower on screen
+    const exW = Math.min(140, Math.round(meterW * 0.34));
+    const exH = 48;
+    const exX = meterX + Math.round((meterW - exW) / 2);
+    const exY = meterY + meterH + 18;
 
-    g.fillStyle = "rgba(40,90,255,.28)"; core.roundRect(g, exX, exY, exW, exH, 12); g.fill();
-    g.strokeStyle = "rgba(140,170,255,.60)"; g.lineWidth = 1; g.stroke();
-    g.fillStyle = "rgba(235,242,255,.98)"; g.font = "800 14px system-ui"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText("EXECUTE", exX + exW / 2, exY + exH / 2);
+    const isTouch = (typeof window !== 'undefined') && (('ontouchstart' in window) || (navigator.maxTouchPoints && navigator.maxTouchPoints > 0));
+    const isNarrow = (typeof window !== 'undefined') && (window.innerWidth && window.innerWidth <= 720);
+    const isPhone = isTouch || isNarrow || (core && core.scale && core.scale < 1);
+
+    if (isPhone) {
+      const diameter = Math.min(160, Math.round(meterW * 0.44));
+      const cx = Math.round(core.BASE_W / 2);
+      // position lower on screen for easier thumb reach on phones
+      const cy = Math.round(core.BASE_H - 120);
+      // use bounding box for pointer hit testing but draw a circular button
+      bs.buttons.qteExecute = { x: cx - Math.round(diameter/2), y: cy - Math.round(diameter/2), w: diameter, h: diameter };
+
+      g.save();
+      g.beginPath();
+      g.fillStyle = "rgba(40,90,255,.28)";
+      g.arc(cx, cy, diameter/2, 0, Math.PI * 2);
+      g.fill();
+      g.strokeStyle = "rgba(140,170,255,.60)"; g.lineWidth = 2; g.stroke();
+      g.fillStyle = "rgba(235,242,255,.98)"; g.font = "800 16px system-ui"; g.textAlign = "center"; g.textBaseline = "middle";
+      g.fillText("EXECUTE", cx, cy);
+      g.restore();
+    } else {
+      // desktop / large-screen: keep original rectangular button
+      // increase clickable area slightly
+      bs.buttons.qteExecute = { x: exX - 8, y: exY - 8, w: exW + 16, h: exH + 16 };
+
+      g.fillStyle = "rgba(40,90,255,.28)"; core.roundRect(g, exX, exY, exW, exH, 12); g.fill();
+      g.strokeStyle = "rgba(140,170,255,.60)"; g.lineWidth = 1; g.stroke();
+      g.fillStyle = "rgba(235,242,255,.98)"; g.font = "800 14px system-ui"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText("EXECUTE", exX + exW / 2, exY + exH / 2);
+    }
 
     g.restore();
   }
